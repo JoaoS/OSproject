@@ -21,7 +21,7 @@
 #include <semaphore.h>
 
 // Produce debug information
-#define DEBUG	  	1	
+#define DEBUG	  	0
 
 // Header of HTTP reply to client 
 #define	SERVER_STRING 	"Server: simpleserver/0.1.0\r\n"
@@ -127,6 +127,8 @@ int main(int argc, char ** argv)
 	{
 		acceptRequests();
 	}
+
+	//wait for processes and threads
 	for(i=0;i<N_THREADS+1;i++)
 	{
 		pthread_join(mythreads[i],NULL);
@@ -147,8 +149,11 @@ void *scheduler(void *id)
 {
 	int my_id = *((int*) id);
 	while(1)
-	{
+	{	
+		#if DEBUG
 		printf("\nI am the scheduler, my id is %d !\n",my_id);
+		#endif
+
 		sleep(50);
 	}
 }
@@ -160,6 +165,7 @@ void acceptRequests()
 	int new_conn,aux_type;
 	struct sockaddr_in client_name;
 	socklen_t client_name_len = sizeof(client_name);
+	
 	// Accept connection on socket
 	if ( (new_conn = accept(socket_conn,(struct sockaddr *)&client_name,&client_name_len)) == -1 ) {
 		printf("Error accepting connection\n");
@@ -177,13 +183,14 @@ void acceptRequests()
 		aux_type = 0;
 
 	// add request to requests buffer
-	buffer[write_pos].type = aux_type;
-	buffer[write_pos].client_socket = new_conn;
-	strcpy(buffer[write_pos].file,"");
-	strcpy(buffer[write_pos].file,req_buf);
-	write_pos = (write_pos +1)%N_THREADS;
-	buffer_size++;
-	pthread_cond_broadcast(&go_on);
+	buffer[write_pos].type = aux_type; 		//static or dynamic request
+	buffer[write_pos].client_socket = new_conn;			//client socket
+	strcpy(buffer[write_pos].file,"");					//filename
+	strcpy(buffer[write_pos].file,req_buf);				//
+	
+	write_pos = (write_pos +1)%N_THREADS;				//circular array
+	buffer_size++;										//dispatch next thread
+	pthread_cond_broadcast(&go_on);						//allow it to continue
 }
 
 //---------------------------------------------------------------------------------------------------------dispatch requests-----------------------------------------------------------------------------------
@@ -191,29 +198,42 @@ void acceptRequests()
 void *dispatchRequests(void*id)
 {
 	int my_id = *((int*) id);
+	int old_read_pos;
 	while(1)
 	{
 		pthread_mutex_lock(&lock_thread);
-		while(head != my_id || buffer_size==0)
+		while(head != my_id)//bloquear todas as threads menos a que o id==head
 		{
+			
+			//printf("head=%dmyid=%d:diference=%d ",head,my_id,head != my_id);
+			//printf("head=%dmyid=%d: diference%d\nbuffer_size=%d\n",head,my_id,head != my_id,buffer_size );
+			
 			pthread_cond_wait(&go_on,&lock_thread);
 		}
+
 		pthread_mutex_unlock(&lock_thread);
+		
+		printf("EU SOU A THREAD %d // a Head é=%d\n",my_id,head );
+		
+
 		//Verify if request is for a page or script
 		if(buffer[read_pos].type ==1)
 			execute_script(buffer[read_pos].client_socket);	
 		else
 			// Search file with html page and send to client
 			send_page(buffer[read_pos].client_socket);
+
+		old_read_pos = read_pos;
 		pthread_mutex_lock(&lock_head);
+
 		head = (head +1)%N_THREADS;
-		read_pos = (read_pos +1)%N_THREADS;
+
+		read_pos = (read_pos +1)% (N_THREADS*2);
+		buffer_size--;
 		pthread_mutex_unlock(&lock_head);
 		// Terminate connection with client
-		buffer_size--;
-		close(buffer[read_pos].client_socket);
-		pthread_cond_broadcast(&go_on);
-		return id;
+		close(buffer[old_read_pos].client_socket);
+		//pthread_cond_broadcast(&go_on);
 	}
 }
 
@@ -246,7 +266,6 @@ void get_request(int socket)
 {
 	int i,j;
 	int found_get;
-
 	found_get=0;
 	while ( read_line(socket,SIZE_BUF) > 0 ) {
 		if(!strncmp(buf,GET_EXPR,strlen(GET_EXPR))) {
